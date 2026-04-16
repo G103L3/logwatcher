@@ -47,7 +47,41 @@ class LogWatcher:
             buffer_size: Buffer size for reading files
             auto_start: Whether to start watching immediately
         """
+        # Validate paths input
+        if not isinstance(paths, list):
+            raise TypeError("paths must be a list of strings")
+        if not paths:
+            raise ValueError("paths list cannot be empty")
+        
         self.paths = [Path(p) for p in paths]
+        
+        # Validate each path is a string
+        for i, p in enumerate(paths):
+            if not isinstance(p, str):
+                raise TypeError(f"Path at index {i} must be a string, got {type(p).__name__}")
+        
+        # Validate callback
+        if not callable(callback):
+            raise TypeError("callback must be a callable function")
+        
+        # Validate poll_interval
+        if not isinstance(poll_interval, (int, float)):
+            raise TypeError("poll_interval must be a number")
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be greater than 0")
+        
+        # Validate encoding
+        if not isinstance(encoding, str):
+            raise TypeError("encoding must be a string")
+        
+        # Validate follow_symlinks
+        if not isinstance(follow_symlinks, bool):
+            raise TypeError("follow_symlinks must be a boolean")
+        
+        # Validate buffer_size
+        if not isinstance(buffer_size, int) or buffer_size <= 0:
+            raise ValueError("buffer_size must be a positive integer")
+        
         self.callback = callback
         self.poll_interval = max(0.1, poll_interval)  # Minimum 100ms
         self.encoding = encoding
@@ -58,7 +92,7 @@ class LogWatcher:
         self._file_positions: Dict[Path, int] = {}
         self._file_inodes: Dict[Path, Optional[int]] = {}
 
-        # Validate paths
+        # Validate paths existence and type
         for path in self.paths:
             if not path.exists():
                 logger.warning(f"Log file does not exist: {path}")
@@ -87,121 +121,6 @@ class LogWatcher:
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
-        logger.info("Stopped LogWatcher")
-
-    def _initialize_file_state(self) -> None:
-        """Initialize tracking state for each file."""
-        for path in self.paths:
-            try:
-                # Get current file size
-                size = path.stat().st_size
-                self._file_positions[path] = size
-
-                # Get inode for rotation detection
-                try:
-                    stat = path.stat(follow_symlinks=self.follow_symlinks)
-                    self._file_inodes[path] = stat.st_ino
-                except OSError:
-                    self._file_inodes[path] = None
-                    logger.debug(f"Could not get inode for {path}")
-            except OSError as e:
-                logger.error(f"Error initializing state for {path}: {e}")
-                self._file_positions[path] = 0
-                self._file_inodes[path] = None
-
-    def _watch_loop(self) -> None:
-        """Main watching loop."""
-        while self._running:
-            try:
-                self._check_files()
-            except Exception as e:
-                logger.error(f"Error in watch loop: {e}")
-            
-            time.sleep(self.poll_interval)
-
-    def _check_files(self) -> None:
-        """Check all watched files for new content."""
-        for path in self.paths:
-            if not path.exists():
-                continue
-
-            try:
-                self._check_file(path)
-            except Exception as e:
-                logger.error(f"Error checking file {path}: {e}")
-
-    def _check_file(self, path: Path) -> None:
-        """Check a single file for new content."""
-        try:
-            # Check for file rotation or replacement
-            current_inode = None
-            try:
-                stat = path.stat(follow_symlinks=self.follow_symlinks)
-                current_inode = stat.st_ino
-            except OSError:
-                pass
-
-            # If inode changed or file was truncated, reset position
-            if (current_inode != self._file_inodes.get(path) or
-                path.stat().st_size < self._file_positions.get(path, 0)):
-                logger.info(f"File rotation detected for {path}, resetting position")
-                self._file_positions[path] = 0
-                if current_inode is not None:
-                    self._file_inodes[path] = current_inode
-
-            # Read new content
-            current_size = path.stat().st_size
-            last_pos = self._file_positions.get(path, 0)
-
-            if current_size > last_pos:
-                # Read new content
-                with open(path, 'rb') as f:
-                    f.seek(last_pos)
-                    new_content = f.read(current_size - last_pos)
-                
-                # Decode and split into lines
-                try:
-                    text_content = new_content.decode(self.encoding)
-                    lines = text_content.splitlines(keepends=True)
-                    
-                    # Process each line
-                    for line in lines:
-                        # Remove trailing newlines for consistency
-                        clean_line = line.rstrip('\n\r')
-                        try:
-                            self.callback(str(path), clean_line)
-                        except Exception as e:
-                            logger.error(f"Error in callback for {path}: {e}")
-                    
-                    # Update position
-                    self._file_positions[path] = current_size
-                except UnicodeDecodeError as e:
-                    logger.warning(f"Unicode decode error in {path}: {e}")
-                    # Update position anyway to avoid reprocessing
-                    self._file_positions[path] = current_size
-
-        except OSError as e:
-            logger.debug(f"Could not read {path}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error checking {path}: {e}")
-
-    def is_running(self) -> bool:
-        """Check if the watcher is currently running."""
-        return self._running
-
-    def get_status(self) -> Dict[str, Any]:
-        """Get current status information."""
-        return {
-            "running": self._running,
-            "paths": [str(p) for p in self.paths],
-            "file_positions": {str(p): pos for p, pos in self._file_positions.items()},
-            "poll_interval": self.poll_interval,
-            "encoding": self.encoding,
-        }
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
+            if self._thread.is_alive():
+                logger.warning("LogWatcher thread did not terminate gracefully")
 ```
